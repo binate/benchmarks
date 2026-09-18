@@ -1,5 +1,7 @@
 # Binate benchmarks
 
+[![CI](https://github.com/binate/benchmarks/actions/workflows/ci.yml/badge.svg)](https://github.com/binate/benchmarks/actions/workflows/ci.yml)
+
 Cross-language performance benchmarks for the [Binate](https://github.com/binate)
 programming language.
 

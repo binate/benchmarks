@@ -74,18 +74,19 @@ fpeq() { awk -v a="$1" -v b="$2" 'BEGIN{d=a-b; if(d<0)d=-d; exit !(d<=1e-8)}'; }
 
 echo "=== $BENCH  (N=$N, rounds=$ROUNDS) ==="
 GOLD=""
+FAIL=0   # real failures (build/run error or output mismatch); skips don't count
 printf "%-14s %10s %10s   %s\n" "language" "best(s)" "median(s)" "output"
 for lang in $LANGS; do
     if build_lang "$lang" 2>"$WORK/err"; then rc=0; else rc=$?; fi
     if [ "$rc" -ne 0 ]; then
         if [ "$rc" -eq 3 ]; then printf "%-14s %10s %10s   %s\n" "$lang" "-" "-" "(toolchain missing — skipped)"
-        else printf "%-14s %10s %10s   BUILD FAILED\n" "$lang" "-" "-"; sed 's/^/    /' "$WORK/err" >&2; fi
+        else printf "%-14s %10s %10s   BUILD FAILED\n" "$lang" "-" "-"; sed 's/^/    /' "$WORK/err" >&2; FAIL=$((FAIL + 1)); fi
         continue
     fi
-    run_once "$WORK/out.$lang" || { printf "%-14s %10s %10s   RUN FAILED\n" "$lang" "-" "-"; continue; }
+    run_once "$WORK/out.$lang" || { printf "%-14s %10s %10s   RUN FAILED\n" "$lang" "-" "-"; FAIL=$((FAIL + 1)); continue; }
     out="$(cat "$WORK/out.$lang")"
     [ -z "$GOLD" ] && GOLD="$out" && GOLD_LANG="$lang"
-    ok="ok"; fpeq "$out" "$GOLD" || ok="MISMATCH (want '$GOLD')"
+    ok="ok"; fpeq "$out" "$GOLD" || { ok="MISMATCH (want '$GOLD')"; FAIL=$((FAIL + 1)); }
     # Warmup + timed rounds.
     run_once "$WORK/out.$lang" || true
     TS=""; r=1
@@ -105,3 +106,8 @@ if [ -n "$GOLD" ] && [ "$N" = "$DEFAULT_N" ] && [ -f "$BENCHDIR/expected.txt" ];
     fi
     echo "pin: reference output matches expected.txt ($want)"
 fi
+
+# Non-zero exit on any real failure (build error, run error, output mismatch) so
+# the harness is usable directly in CI. A skipped-because-missing toolchain is
+# not a failure.
+[ "$FAIL" -eq 0 ] || { echo "$FAIL implementation(s) failed" >&2; exit 1; }
