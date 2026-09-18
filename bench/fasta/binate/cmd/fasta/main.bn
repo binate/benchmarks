@@ -1,0 +1,142 @@
+package "main"
+
+import "pkg/std/os"
+
+// fasta — see ../../../c/fasta.c for the algorithm. One Binate source, built by
+// both backends. The PRNG seed is threaded through a one-element slice so the
+// two random sections share it (as the C reference shares one global seed).
+
+func genRandom(seed @[]int, max float64) float64 {
+	var im int = 139968
+	seed[0] = (seed[0] * 3877 + 29573) % im
+	return max * cast(float64, seed[0]) / cast(float64, im)
+}
+
+func makeCumulative(prob @[]float64) {
+	var c float64 = 0.0
+	for i := 0; i < len(prob); i++ {
+		c = c + prob[i]
+		prob[i] = c
+	}
+}
+
+func selectRandom(syms @[]char, cprob @[]float64, seed @[]int) char {
+	var r float64 = genRandom(seed, 1.0)
+	for i := 0; i < len(syms); i++ {
+		if r < cprob[i] {
+			return syms[i]
+		}
+	}
+	return syms[len(syms) - 1]
+}
+
+func repeatFasta(alu *[]readonly char, title *[]readonly char, n int) {
+	_, _ = os.Stdout.Write(title)
+	var alulen int = len(alu)
+	var buf @[]uint8 = make_slice(uint8, 60)
+	var pos int = 0
+	var rem int = n
+	for rem > 0 {
+		var line int = 60
+		if rem < 60 {
+			line = rem
+		}
+		for i := 0; i < line; i++ {
+			buf[i] = cast(uint8, alu[pos])
+			pos = (pos + 1) % alulen
+		}
+		_, _ = os.Stdout.Write(buf[0:line])
+		_, _ = os.Stdout.Write("\n")
+		rem = rem - line
+	}
+}
+
+func randomFasta(syms @[]char, prob @[]float64, title *[]readonly char, n int, seed @[]int) {
+	makeCumulative(prob)
+	_, _ = os.Stdout.Write(title)
+	var buf @[]uint8 = make_slice(uint8, 60)
+	var rem int = n
+	for rem > 0 {
+		var line int = 60
+		if rem < 60 {
+			line = rem
+		}
+		for i := 0; i < line; i++ {
+			buf[i] = cast(uint8, selectRandom(syms, prob, seed))
+		}
+		_, _ = os.Stdout.Write(buf[0:line])
+		_, _ = os.Stdout.Write("\n")
+		rem = rem - line
+	}
+}
+
+func main() {
+	var args @[]readonly @[]readonly char = os.Args()
+	var n int = 512
+	if len(args) > 1 && len(args[1]) > 0 {
+		var acc int = 0
+		var okay bool = true
+		for j := 0; j < len(args[1]); j++ {
+			var c char = args[1][j]
+			if c < '0' || c > '9' {
+				okay = false
+			} else {
+				acc = acc * 10 + cast(int, c) - cast(int, '0')
+			}
+		}
+		if okay {
+			n = acc
+		}
+	}
+
+	var iubSym @[]char = make_slice(char, 15)
+	var iubP @[]float64 = make_slice(float64, 15)
+	iubSym[0] = 'a'
+	iubSym[1] = 'c'
+	iubSym[2] = 'g'
+	iubSym[3] = 't'
+	iubSym[4] = 'B'
+	iubSym[5] = 'D'
+	iubSym[6] = 'H'
+	iubSym[7] = 'K'
+	iubSym[8] = 'M'
+	iubSym[9] = 'N'
+	iubSym[10] = 'R'
+	iubSym[11] = 'S'
+	iubSym[12] = 'V'
+	iubSym[13] = 'W'
+	iubSym[14] = 'Y'
+	iubP[0] = 0.27
+	iubP[1] = 0.12
+	iubP[2] = 0.12
+	iubP[3] = 0.27
+	for i := 4; i < 15; i++ {
+		iubP[i] = 0.02
+	}
+
+	var homoSym @[]char = make_slice(char, 4)
+	var homoP @[]float64 = make_slice(float64, 4)
+	homoSym[0] = 'a'
+	homoSym[1] = 'c'
+	homoSym[2] = 'g'
+	homoSym[3] = 't'
+	homoP[0] = 0.3029549426680
+	homoP[1] = 0.1979883004921
+	homoP[2] = 0.1975473066391
+	homoP[3] = 0.3015094502008
+
+	var alu *[]readonly char = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTG"
+			"GGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGA"
+			"GACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAA"
+			"AATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAAT"
+			"CCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAAC"
+			"CCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTG"
+			"CACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"
+
+	var seed @[]int = make_slice(int, 1)
+	seed[0] = 42
+
+	repeatFasta(alu, ">ONE Homo sapiens alu\n", n * 2)
+	randomFasta(iubSym, iubP, ">TWO IUB ambiguity codes\n", n * 3, seed)
+	randomFasta(homoSym, homoP, ">THREE Homo sapiens frequency\n", n * 5, seed)
+}
