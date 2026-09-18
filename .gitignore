@@ -1,0 +1,7 @@
+# build outputs (per-run scratch)
+/out/
+bench/*/**/out/
+# compiled peer-language artifacts
+*.class
+__pycache__/
+*.pyc
