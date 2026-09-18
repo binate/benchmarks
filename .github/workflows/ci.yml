@@ -28,7 +28,7 @@ jobs:
           for d in bench/*/; do
             name="$(basename "$d")"
             echo "::group::$name — cross-language agreement (small N)"
-            N=200 ROUNDS=1 ./scripts/run.sh "$name"
+            CHECK=1 ROUNDS=1 ./scripts/run.sh "$name"
             echo "::endgroup::"
             echo "::group::$name — reference pin (canonical N)"
             ROUNDS=1 ./scripts/run.sh "$name" c

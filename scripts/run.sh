@@ -31,13 +31,22 @@ ALL_LANGS="binate-native binate-llvm c cpp rust go java python"
 LANGS="${*:-$ALL_LANGS}"
 
 # Pinned problem parameters live beside the sources. COMPARE selects how outputs
-# are cross-checked: "float" (default) compares line-by-line with a 1e-8
-# tolerance; "bytes" requires byte-identical output (for benchmarks that emit an
-# image or other exact payload).
+# are cross-checked:
+#   float  (default) — line-by-line with a 1e-8 tolerance (floating-point output)
+#   exact            — byte-identical (deterministic integer/text output)
+#   bytes            — byte-identical, shown as a byte count (binary output)
+# DEFAULT_N is the canonical (pin/timing) size; SMALL_N is a safe size for the
+# correctness cross-check — for benchmarks where N is a tree depth or permutation
+# size, the canonical N is far too large to run every language on.
 DEFAULT_N=""
+SMALL_N=""
 COMPARE=float
 . "$BENCHDIR/config.sh"
-: "${N:=$DEFAULT_N}"
+# CHECK=1 selects the small correctness size; otherwise the canonical size. An
+# explicit N in the environment overrides either.
+if [ -z "$N" ]; then
+    if [ -n "$CHECK" ]; then N="${SMALL_N:-$DEFAULT_N}"; else N="$DEFAULT_N"; fi
+fi
 : "${ROUNDS:=5}"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bench_XXXXXX")"
@@ -71,14 +80,14 @@ build_lang() {
 run_once() { $CMD_PRE "$CMD_BIN" "$N" > "$1" 2>/dev/null; }
 
 # outputs_agree <file-a> <file-b>: do two runs' outputs match under COMPARE?
-#   bytes  — byte-identical.
+#   bytes/exact — byte-identical.
 #   float  — same number of lines, each pair of values within 1e-8. Cross-
 #            language floating-point output can differ in the last ULP (e.g. FMA
 #            contraction on one target but not another), so exact match would be
 #            too strict; a real algorithm error moves a value far more than that.
 outputs_agree() {
     case "$COMPARE" in
-        bytes) cmp -s "$1" "$2" ;;
+        bytes|exact) cmp -s "$1" "$2" ;;
         *) awk 'NR==FNR{a[FNR]=$0; na=FNR; next} {b[FNR]=$0; nb=FNR}
                 END{ if (na != nb) exit 1
                      for (i = 1; i <= na; i++) { d = a[i]-b[i]; if (d<0) d=-d
