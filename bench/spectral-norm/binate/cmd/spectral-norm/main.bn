@@ -1,17 +1,17 @@
 package "main"
 
-// spectral-norm — see ../../../c/spectral-norm.c for the algorithm. Single
-// Binate source; the harness compiles it with both the native and the LLVM
-// backend, and those two rows are the point of the benchmark.
-
 import "pkg/std/fmt"
 import "pkg/std/math"
 import "pkg/std/os"
 
+// spectral-norm — see ../../../c/spectral-norm.c for the algorithm. Single
+// Binate source; the harness compiles it with both the native and the LLVM
+// backend, and those two rows are the point of the benchmark.
+
 // evalA returns A(i,j) = 1 / ((i+j)(i+j+1)/2 + i + 1).
 func evalA(i int, j int) float64 {
 	var s int = i + j
-	return 1.0 / cast(float64, s*(s+1)/2+i+1)
+	return 1.0 / cast(float64, s * (s + 1) / 2 + i + 1)
 }
 
 // mulAv computes out = A·v.
@@ -20,7 +20,7 @@ func mulAv(v @[]float64, out @[]float64) {
 	for i := 0; i < n; i++ {
 		var s float64 = 0.0
 		for j := 0; j < n; j++ {
-			s = s + evalA(i, j)*v[j]
+			s = s + evalA(i, j) * v[j]
 		}
 		out[i] = s
 	}
@@ -32,7 +32,7 @@ func mulAtv(v @[]float64, out @[]float64) {
 	for i := 0; i < n; i++ {
 		var s float64 = 0.0
 		for j := 0; j < n; j++ {
-			s = s + evalA(j, i)*v[j]
+			s = s + evalA(j, i) * v[j]
 		}
 		out[i] = s
 	}
@@ -57,7 +57,7 @@ func main() {
 			if c < '0' || c > '9' {
 				okay = false
 			} else {
-				acc = acc*10 + cast(int, c) - cast(int, '0')
+				acc = acc * 10 + cast(int, c) - cast(int, '0')
 			}
 		}
 		if okay {
@@ -77,8 +77,8 @@ func main() {
 	var vBv float64 = 0.0
 	var vv float64 = 0.0
 	for i := 0; i < n; i++ {
-		vBv = vBv + u[i]*v[i]
-		vv = vv + v[i]*v[i]
+		vBv = vBv + u[i] * v[i]
+		vv = vv + v[i] * v[i]
 	}
-	fmt.Printf("%.9f\n", math.Sqrt(vBv/vv))
+	fmt.Printf("%.9f\n", math.Sqrt(vBv / vv))
 }

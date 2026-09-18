@@ -30,8 +30,12 @@ BENCHDIR="$REPO_DIR/bench/$BENCH"
 ALL_LANGS="binate-native binate-llvm c cpp rust go java python"
 LANGS="${*:-$ALL_LANGS}"
 
-# Pinned problem parameters live beside the sources.
+# Pinned problem parameters live beside the sources. COMPARE selects how outputs
+# are cross-checked: "float" (default) compares line-by-line with a 1e-8
+# tolerance; "bytes" requires byte-identical output (for benchmarks that emit an
+# image or other exact payload).
 DEFAULT_N=""
+COMPARE=float
 . "$BENCHDIR/config.sh"
 : "${N:=$DEFAULT_N}"
 : "${ROUNDS:=5}"
@@ -66,15 +70,33 @@ build_lang() {
 # Time one run of the built command on problem size N; stdout -> $1.
 run_once() { $CMD_PRE "$CMD_BIN" "$N" > "$1" 2>/dev/null; }
 
-# Numeric agreement: true when |a-b| <= 1e-8. Cross-language floating-point
-# output can differ in the last ULP (e.g. FMA contraction on one target but not
-# another), so exact string match would be too strict; a real algorithm error
-# moves the value far more than 1e-8.
-fpeq() { awk -v a="$1" -v b="$2" 'BEGIN{d=a-b; if(d<0)d=-d; exit !(d<=1e-8)}'; }
+# outputs_agree <file-a> <file-b>: do two runs' outputs match under COMPARE?
+#   bytes  — byte-identical.
+#   float  — same number of lines, each pair of values within 1e-8. Cross-
+#            language floating-point output can differ in the last ULP (e.g. FMA
+#            contraction on one target but not another), so exact match would be
+#            too strict; a real algorithm error moves a value far more than that.
+outputs_agree() {
+    case "$COMPARE" in
+        bytes) cmp -s "$1" "$2" ;;
+        *) awk 'NR==FNR{a[FNR]=$0; na=FNR; next} {b[FNR]=$0; nb=FNR}
+                END{ if (na != nb) exit 1
+                     for (i = 1; i <= na; i++) { d = a[i]-b[i]; if (d<0) d=-d
+                         if (!(d <= 1e-8)) exit 1 }
+                     exit 0 }' "$1" "$2" ;;
+    esac
+}
+
+# disp_of <file>: a compact one-line summary of a run's output for the table.
+disp_of() {
+    if [ "$COMPARE" = bytes ]; then echo "$(wc -c < "$1" | tr -d ' ') bytes"; return; fi
+    _n="$(wc -l < "$1" | tr -d ' ')"
+    if [ "$_n" -le 1 ]; then head -1 "$1"; else echo "$(head -1 "$1") … ($_n lines)"; fi
+}
 
 echo "=== $BENCH  (N=$N, rounds=$ROUNDS) ==="
-GOLD=""
-FAIL=0   # real failures (build/run error or output mismatch); skips don't count
+GOLD_FILE=""   # the reference (first successful) run's output; others must agree
+FAIL=0         # real failures (build/run error or output mismatch); skips don't count
 printf "%-14s %10s %10s   %s\n" "language" "best(s)" "median(s)" "output"
 for lang in $LANGS; do
     if build_lang "$lang" 2>"$WORK/err"; then rc=0; else rc=$?; fi
@@ -84,9 +106,8 @@ for lang in $LANGS; do
         continue
     fi
     run_once "$WORK/out.$lang" || { printf "%-14s %10s %10s   RUN FAILED\n" "$lang" "-" "-"; FAIL=$((FAIL + 1)); continue; }
-    out="$(cat "$WORK/out.$lang")"
-    [ -z "$GOLD" ] && GOLD="$out" && GOLD_LANG="$lang"
-    ok="ok"; fpeq "$out" "$GOLD" || { ok="MISMATCH (want '$GOLD')"; FAIL=$((FAIL + 1)); }
+    if [ -z "$GOLD_FILE" ]; then cp "$WORK/out.$lang" "$WORK/gold"; GOLD_FILE="$WORK/gold"; GOLD_LANG="$lang"; fi
+    ok="ok"; outputs_agree "$WORK/out.$lang" "$GOLD_FILE" || { ok="MISMATCH (vs $GOLD_LANG)"; FAIL=$((FAIL + 1)); }
     # Warmup + timed rounds.
     run_once "$WORK/out.$lang" || true
     TS=""; r=1
@@ -94,17 +115,16 @@ for lang in $LANGS; do
         t0="$(now)"; run_once "$WORK/out.$lang"; t1="$(now)"
         TS="$TS $(delta "$t0" "$t1")"; r=$((r + 1))
     done
-    printf "%-14s %10s %10s   %s  %s\n" "$lang" "$(minof "$TS")" "$(medianof "$TS")" "$out" "$ok"
+    printf "%-14s %10s %10s   %s  %s\n" "$lang" "$(minof "$TS")" "$(medianof "$TS")" "$(disp_of "$WORK/out.$lang")" "$ok"
 done
 
-# Pin check: at the canonical size the reference must match the recorded value.
-if [ -n "$GOLD" ] && [ "$N" = "$DEFAULT_N" ] && [ -f "$BENCHDIR/expected.txt" ]; then
-    want="$(cat "$BENCHDIR/expected.txt")"
-    if ! fpeq "$GOLD" "$want"; then
-        echo "PIN MISMATCH: reference ($GOLD_LANG) produced '$GOLD', expected.txt says '$want'" >&2
+# Pin check: at the canonical size the reference must match the recorded output.
+if [ -n "$GOLD_FILE" ] && [ "$N" = "$DEFAULT_N" ] && [ -f "$BENCHDIR/expected.txt" ]; then
+    if ! outputs_agree "$GOLD_FILE" "$BENCHDIR/expected.txt"; then
+        echo "PIN MISMATCH: reference ($GOLD_LANG) output does not match expected.txt" >&2
         exit 1
     fi
-    echo "pin: reference output matches expected.txt ($want)"
+    echo "pin: reference ($GOLD_LANG) output matches expected.txt"
 fi
 
 # Non-zero exit on any real failure (build error, run error, output mismatch) so
