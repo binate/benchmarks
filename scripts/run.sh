@@ -65,7 +65,10 @@ build_lang() {
             binate_build llvm   "$BENCHDIR/binate" "$BENCHDIR/binate/cmd/$BENCH" "$CMD_BIN" ;;
         c)    have cc    || return 3; CMD_BIN="$WORK/c_bin";   cc  -O2 -ffp-contract=off -o "$CMD_BIN" "$BENCHDIR/c/$BENCH.c" -lm ;;
         cpp)  have c++   || return 3; CMD_BIN="$WORK/cpp_bin"; c++ -O2 -ffp-contract=off -std=c++17 -o "$CMD_BIN" "$BENCHDIR/cpp/$BENCH.cpp" ;;
-        rust) have rustc || return 3; CMD_BIN="$WORK/rust_bin"; rustc -O -o "$CMD_BIN" "$BENCHDIR/rust/$BENCH.rs" ;;
+        rust) if have rustc; then RUSTC="rustc"           # rustc on PATH (e.g. CI)
+              elif have rustup; then RUSTC="rustup run stable rustc"  # rustup without cargo/bin on PATH
+              else return 3; fi
+              CMD_BIN="$WORK/rust_bin"; $RUSTC -O -o "$CMD_BIN" "$BENCHDIR/rust/$BENCH.rs" ;;
         go)   have go    || return 3; CMD_BIN="$WORK/go_bin"
               ( cd "$BENCHDIR/go" && go build -o "$CMD_BIN" . ) ;;
         java) javac -version >/dev/null 2>&1 || return 3

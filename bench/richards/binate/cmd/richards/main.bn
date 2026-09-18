@@ -1,0 +1,353 @@
+package "main"
+
+import "pkg/std/fmt"
+import "pkg/std/os"
+
+// richards — see ../../../c/richards.c for the algorithm. This is the suite's
+// dispatch probe: Task is a Binate interface, each task type is a separate
+// impl, and the scheduler drives everything through the virtual `run` call. The
+// scheduler is passed to run() rather than stored on the task, so the object
+// graph has no task->scheduler cycle for reference counting to leak on.
+
+const I_IDLE int = 1
+
+const I_WORK int = 2
+
+const I_HANDLERA int = 3
+
+const I_HANDLERB int = 4
+
+const I_DEVA int = 5
+
+const I_DEVB int = 6
+
+const NUM_IDS int = 6
+
+const K_DEV int = 1000
+
+const K_WORK int = 1001
+
+const STATE_RUNNING int = 0
+
+const STATE_RUNNABLE int = 1
+
+const STATE_SUSPENDED int = 2
+
+const STATE_HELD int = 4
+
+const STATE_SUSPENDED_RUNNABLE int = 3
+
+const DATA_SIZE int = 4
+
+const COUNT int = 1000
+
+// Task is declared before the structs that hold it: a struct field cannot
+// forward-reference an interface, but an interface's methods may forward-
+// reference structs (Scheduler/Packet/TCB below).
+interface Task {
+	run(s @Scheduler, p @Packet) @TCB
+}
+
+type Packet struct {
+	link @Packet
+	id   int
+	kind int
+	a1   int
+	a2   @[]int
+}
+
+type TCB struct {
+	link     @TCB
+	id       int
+	priority int
+	input    @Packet
+	state    int
+	task     @Task
+}
+
+type Scheduler struct {
+	queueCount int
+	holdCount  int
+	blocks     @[]@TCB
+	list       @TCB
+	current    @TCB
+	currentId  int
+}
+
+func newPacket(link @Packet, id int, kind int) @Packet {
+	var p @Packet = make(Packet)
+	p.link = link
+	p.id = id
+	p.kind = kind
+	p.a1 = 0
+	p.a2 = make_slice(int, DATA_SIZE)
+	return p
+}
+
+func addTo(p @Packet, list @Packet) @Packet {
+	p.link = nil
+	if list == nil {
+		return p
+	}
+	var q @Packet = list
+	for q.link != nil {
+		q = q.link
+	}
+	q.link = p
+	return list
+}
+
+func (s *Scheduler) hold() @TCB {
+	s.holdCount = s.holdCount + 1
+	s.current.state = s.current.state | STATE_HELD
+	return s.current.link
+}
+
+func (s *Scheduler) suspend() @TCB {
+	s.current.state = s.current.state | STATE_SUSPENDED
+	return s.current
+}
+
+func (s *Scheduler) release(id int) @TCB {
+	var t @TCB = s.blocks[id]
+	if t == nil {
+		return nil
+	}
+	t.state = t.state & ~STATE_HELD
+	if t.priority > s.current.priority {
+		return t
+	}
+	return s.current
+}
+
+func (s *Scheduler) checkPriorityAdd(t @TCB, p @Packet) @TCB {
+	if t.input == nil {
+		t.input = p
+		t.state = t.state | STATE_RUNNABLE
+		if t.priority > s.current.priority {
+			return t
+		}
+	} else {
+		t.input = addTo(p, t.input)
+	}
+	return s.current
+}
+
+func (s *Scheduler) queue(p @Packet) @TCB {
+	var t @TCB = s.blocks[p.id]
+	if t == nil {
+		return nil
+	}
+	s.queueCount = s.queueCount + 1
+	p.link = nil
+	p.id = s.currentId
+	return s.checkPriorityAdd(t, p)
+}
+
+func addTask(s @Scheduler, id int, priority int, q @Packet, task @Task) {
+	var t @TCB = make(TCB)
+	t.link = s.list
+	t.id = id
+	t.priority = priority
+	t.input = q
+	t.task = task
+	if q == nil {
+		t.state = STATE_SUSPENDED
+	} else {
+		t.state = STATE_SUSPENDED_RUNNABLE
+	}
+	s.list = t
+	s.current = t
+	s.blocks[id] = t
+}
+
+func schedule(s @Scheduler) {
+	s.current = s.list
+	for s.current != nil {
+		if (s.current.state & STATE_HELD) != 0 || s.current.state == STATE_SUSPENDED {
+			s.current = s.current.link
+		} else {
+			s.currentId = s.current.id
+			var packet @Packet = nil
+			if s.current.state == STATE_SUSPENDED_RUNNABLE {
+				packet = s.current.input
+				s.current.input = packet.link
+				if s.current.input == nil {
+					s.current.state = STATE_RUNNING
+				} else {
+					s.current.state = STATE_RUNNABLE
+				}
+			}
+			var cur @TCB = s.current
+			s.current = cur.task.run(s, packet)
+		}
+	}
+}
+
+type IdleTask struct {
+	control int
+	count   int
+}
+
+func (t *IdleTask) run(s @Scheduler, p @Packet) @TCB {
+	t.count = t.count - 1
+	if t.count == 0 {
+		return s.hold()
+	}
+	if (t.control & 1) == 0 {
+		t.control = t.control >> 1
+		return s.release(I_DEVA)
+	}
+	t.control = (t.control >> 1) ^ 53256
+	return s.release(I_DEVB)
+}
+
+impl *IdleTask : Task
+
+type DeviceTask struct {
+	pending @Packet
+}
+
+func (t *DeviceTask) run(s @Scheduler, p @Packet) @TCB {
+	if p == nil {
+		if t.pending == nil {
+			return s.suspend()
+		}
+		var q @Packet = t.pending
+		t.pending = nil
+		return s.queue(q)
+	}
+	t.pending = p
+	return s.hold()
+}
+
+impl *DeviceTask : Task
+
+type WorkerTask struct {
+	dest    int
+	counter int
+}
+
+func (t *WorkerTask) run(s @Scheduler, p @Packet) @TCB {
+	if p == nil {
+		return s.suspend()
+	}
+	if t.dest == I_HANDLERA {
+		t.dest = I_HANDLERB
+	} else {
+		t.dest = I_HANDLERA
+	}
+	p.id = t.dest
+	p.a1 = 0
+	for i := 0; i < DATA_SIZE; i++ {
+		t.counter = t.counter + 1
+		if t.counter > 26 {
+			t.counter = 1
+		}
+		p.a2[i] = 65 + t.counter - 1
+	}
+	return s.queue(p)
+}
+
+impl *WorkerTask : Task
+
+type HandlerTask struct {
+	work   @Packet
+	device @Packet
+}
+
+func (t *HandlerTask) run(s @Scheduler, p @Packet) @TCB {
+	if p != nil {
+		if p.kind == K_WORK {
+			t.work = addTo(p, t.work)
+		} else {
+			t.device = addTo(p, t.device)
+		}
+	}
+	if t.work != nil {
+		var c int = t.work.a1
+		if c < DATA_SIZE {
+			if t.device != nil {
+				var v @Packet = t.device
+				t.device = t.device.link
+				v.a1 = t.work.a2[c]
+				t.work.a1 = c + 1
+				return s.queue(v)
+			}
+		} else {
+			var v @Packet = t.work
+			t.work = t.work.link
+			return s.queue(v)
+		}
+	}
+	return s.suspend()
+}
+
+impl *HandlerTask : Task
+
+func runOnce() (int, int) {
+	var s @Scheduler = make(Scheduler)
+	s.queueCount = 0
+	s.holdCount = 0
+	s.currentId = 0
+	s.blocks = make_slice(@TCB, NUM_IDS + 1)
+
+	var idle IdleTask
+	idle.control = 1
+	idle.count = COUNT
+	addTask(s, I_IDLE, 0, nil, box(idle))
+	s.blocks[I_IDLE].state = STATE_RUNNING
+
+	var wq @Packet = newPacket(nil, I_WORK, K_WORK)
+	wq = newPacket(wq, I_WORK, K_WORK)
+	var worker WorkerTask
+	worker.dest = I_HANDLERA
+	worker.counter = 0
+	addTask(s, I_WORK, 1000, wq, box(worker))
+
+	var qa @Packet = newPacket(nil, I_DEVA, K_DEV)
+	qa = newPacket(qa, I_DEVA, K_DEV)
+	qa = newPacket(qa, I_DEVA, K_DEV)
+	var ha HandlerTask
+	addTask(s, I_HANDLERA, 2000, qa, box(ha))
+
+	var qb @Packet = newPacket(nil, I_DEVB, K_DEV)
+	qb = newPacket(qb, I_DEVB, K_DEV)
+	qb = newPacket(qb, I_DEVB, K_DEV)
+	var hb HandlerTask
+	addTask(s, I_HANDLERB, 3000, qb, box(hb))
+
+	var da DeviceTask
+	addTask(s, I_DEVA, 4000, nil, box(da))
+	var db DeviceTask
+	addTask(s, I_DEVB, 5000, nil, box(db))
+
+	schedule(s)
+	return s.queueCount, s.holdCount
+}
+
+func main() {
+	var args @[]readonly @[]readonly char = os.Args()
+	var iters int = 100
+	if len(args) > 1 && len(args[1]) > 0 {
+		var acc int = 0
+		var okay bool = true
+		for j := 0; j < len(args[1]); j++ {
+			var c char = args[1][j]
+			if c < '0' || c > '9' {
+				okay = false
+			} else {
+				acc = acc * 10 + cast(int, c) - cast(int, '0')
+			}
+		}
+		if okay {
+			iters = acc
+		}
+	}
+	var q int = 0
+	var h int = 0
+	for i := 0; i < iters; i++ {
+		q, h = runOnce()
+	}
+	fmt.Printf("queue %d hold %d\n", q, h)
+}
